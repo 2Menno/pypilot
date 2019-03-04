@@ -103,47 +103,69 @@ PWR+             VIN
 */
 
 //#define VNH2SP30 // defined if this board is used
-//#define DISABLE_TEMP_SENSE    // if no temp sensors avoid errors
-//#define DISABLE_VOLTAGE_SENSE // if no voltage sense
-//#define DISABLE_RUDDER_SENSE  // if no rudder sense
+#define DISABLE_TEMP_SENSE    // if no temp sensors avoid errors
+#define DISABLE_VOLTAGE_SENSE // if no voltage sense
+#define DISABLE_RUDDER_SENSE  // if no rudder sense
 
 
 // run at 4mhz instead of 16mhz to save power,
 // and to be able to measure lower current from the shunt
 
-#define DIV_CLOCK 4  // 1 for 16mhz, 2 for 8mhz, 4 for 4mhz
+#if F_CPU == 8000000UL
+    #define DIV_CLOCK 1  //              1 for 8mhz, 2 for 4mhz
+#elif
+    #define DIV_CLOCK 4  // 1 for 16mhz, 2 for 8mhz, 4 for 4mhz
+#endif
 #define QUIET  // don't use 1khz
 
-#if DIV_CLOCK==4
-#define dead_time \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop");
-#elif DIV_CLOCK==2
-#define dead_time \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop");
-#elif DIV_CLOCK==1
-#define dead_time \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop"); \
-    asm volatile ("nop");
-#else
-#error "invalid DIV_CLOCK"
+#if F_CPU == 8000000UL
+    #if DIV_CLOCK==2
+    #define dead_time \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop");
+    #elif DIV_CLOCK==1
+    #define dead_time \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop");
+    #else
+    #error "invalid DIV_CLOCK"
+    #endif
+#elif
+    #if DIV_CLOCK==4
+    #define dead_time \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop");
+    #elif DIV_CLOCK==2
+    #define dead_time \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop");
+    #elif DIV_CLOCK==1
+    #define dead_time \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop"); \
+        asm volatile ("nop");
+    #else
+    #error "invalid DIV_CLOCK"
+    #endif
 #endif
-
 //#define HIGH_CURRENT_OLD   // high current uses 500uohm resistor and 50x amplifier
 // otherwise using shunt without amplification
 
@@ -151,11 +173,11 @@ PWR+             VIN
 uint8_t shunt_resistance = 1;
 
 #define low_current_pin 5 // use pin 5 to specify low current (no amplifier)
-uint8_t low_current = 1;
+uint8_t low_current = 0;
 
 #define pwm_style_pin 6
 // pwm style, 0 = hbridge, 1 = rc pwm, 2 = vnh2sp30
-uint8_t pwm_style = 2; // detected to 0 or 1 unless detection disabled, default 2
+uint8_t pwm_style = 3; // detected to 0 or 1 unless detection disabled, default 2
 
 #define fwd_fault_pin 7 // use pin 7 for optional fault
 #define rev_fault_pin 8 // use pin 7 for optional fault
@@ -370,7 +392,10 @@ void setup()
 #ifndef VNH2SP30
     pwm_style = digitalRead(pwm_style_pin);
 #endif
-    if(pwm_style) {
+
+    pwm_style = 3;
+
+    if(pwm_style==1||pwm_style==2) {
         digitalWrite(pwm_output_pin, LOW); /* enable internal pullups */
         pinMode(pwm_output_pin, OUTPUT);
     }
@@ -379,6 +404,7 @@ void setup()
 
     // test current
     low_current = digitalRead(low_current_pin);
+    low_current = 0;
 
 #if 1
     // setup adc
@@ -428,6 +454,70 @@ void position(uint16_t value)
             a_bottom_off;
             b_bottom_off;
         }            
+    } else if (pwm_style == 3) {
+        uint16_t OCR1A_u = 16000, OCR1B_u = 16000, ICR1_u = 1000;
+        // use 62.5 hz at full power to reduce losses
+        // some cycling is required to refresh the bootstrap capacitor
+        // but the current through the motor remains continuous
+        if(value > 1100) {
+#ifndef QUIET                
+            ICR1_u=16000/DIV_CLOCK;  //fPWM=1khz
+            if(value > 1980)
+                value = 1980;
+            OCR1A_u = 20 + (2000 - value)*(16/DIV_CLOCK);
+#else
+            if(value > 1900) {
+                if(low_current)
+                    ICR1_u=64000;  //fPWM=62.5hz, 125hz, or 250hz
+                else
+                    ICR1_u=16000;  //faster frequency for high current board
+                OCR1A_u = 120; // 99.8125% duty cycle
+            } else {
+                ICR1_u=1000/DIV_CLOCK;  //fPWM=16khz
+                OCR1A_u = 20 + (2000 - value)/DIV_CLOCK;
+            }
+#endif
+            TIMSK1 = _BV(TOIE1) | _BV(OCIE1A);
+        } else if(value < 900) {
+#ifndef QUIET                
+            ICR1_u=16000/DIV_CLOCK;  //fPWM=1khz
+            if(value < 20)
+                value = 20;
+            OCR1B_u = 20 + (value)*16/DIV_CLOCK;
+#else
+            if(value < 100) {
+                if(low_current)
+                    ICR1_u=64000;  //fPWM=62.5hz, 125hz, or 250hz
+                else
+                    ICR1_u=16000;  //faster frequency for high current board
+                OCR1B_u = 120;
+            } else {
+                ICR1_u=1000/DIV_CLOCK;  //fPWM=16khz
+                OCR1B_u = 20 + (value)/DIV_CLOCK;
+            }
+#endif
+            TIMSK1 = _BV(TOIE1) | _BV(OCIE1B);
+        } else {
+            TIMSK1 = 0;//_BV(TOIE1);
+            a_top_off;
+            b_top_off;
+            dead_time;
+//            a_bottom_on;  // set brake
+//            b_bottom_on;
+            a_bottom_off;
+            b_bottom_off;
+        }
+
+        if(TIMSK1) {
+            OCR1A = OCR1A_u;
+            OCR1B = OCR1B_u;
+            if(ICR1 != ICR1_u) {
+                cli();
+                ICR1 = ICR1_u;
+                TCNT1 = ICR1_u - 40; // ensure timer is before new end
+                sei();
+            }
+        }
     } else {
         uint16_t OCR1A_u = 16000, OCR1B_u = 16000, ICR1_u = 1000;
         // use 62.5 hz at full power to reduce losses
@@ -556,7 +646,7 @@ void disengage()
 
 void detach()
 {
-    if(pwm_style) {
+    if(pwm_style==1||pwm_style==2) {
         TCCR1A=0;
         TCCR1B=0;
         while(digitalRead(pwm_output_pin)); // wait for end of pwm if pulse is high
@@ -666,7 +756,7 @@ uint8_t adc_cnt;
 // has 6862 samples/s
 ISR(ADC_vect)
 {
-    if(pwm_style)
+    if(pwm_style==1||pwm_style==2)
         ADCSRA |= _BV(ADSC); // enable conversion
     else
         sei(); // enable nested interrupts to ensure correct operation
@@ -711,7 +801,7 @@ ISR(ADC_vect)
 #endif
     ADMUX = defmux | muxes[adc_counter];
 ret:;
-    if(!pwm_style)
+    if(pwm_style==0||pwm_style==3)
         ADCSRA |= _BV(ADSC); // enable conversion
 }
 
