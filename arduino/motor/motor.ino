@@ -173,7 +173,7 @@ PWR+             VIN
 uint8_t shunt_resistance = 1;
 
 #define low_current_pin 5 // use pin 5 to specify low current (no amplifier)
-uint8_t low_current = 0;
+uint8_t low_current = 1;
 
 #define pwm_style_pin 6
 // pwm style, 0 = hbridge, 1 = rc pwm, 2 = vnh2sp30
@@ -204,6 +204,7 @@ uint8_t pwm_style = 3; // detected to 0 or 1 unless detection disabled, default 
 #define b_bottom_off PORTD &= ~_BV(PD3)
 
 #define clutch_pin 11 // use pin 11 to engage clutch
+#define direction_pin 12 // use pin 11 to engage clutch
 
 #define clutch_on PORTB |= _BV(PB3)
 #define clutch_off PORTB &= ~_BV(PB3)
@@ -302,7 +303,8 @@ void eeprom_update_8(int address, uint8_t value)
 uint16_t max_current = 2000; // 20 Amps
 uint16_t max_controller_temp= 7000; // 70C
 uint16_t max_motor_temp = 7000; // 70C
-uint8_t max_slew_speed = 15, max_slew_slow = 35; // 200 is full power in 1/10th of a second
+uint8_t max_slew_speed = 100, max_slew_slow = 150; // 200 is full power in 1/10th of a second
+//uint8_t max_slew_speed = 15, max_slew_slow = 35; // 200 is full power in 1/10th of a second
 uint8_t rudder_min = 0, rudder_max = 255;
 
 uint8_t eeprom_read_addr = 0;
@@ -319,6 +321,7 @@ void setup()
     CLKPR = _BV(CLKPCE);
     CLKPR = _BV(CLKPS0); // divide by 2
 #endif
+    default_off();
     // Disable all interrupts
     cli();
 
@@ -351,6 +354,7 @@ void setup()
     pinMode(low_current_pin, INPUT_PULLUP);
     pinMode(pwm_style_pin, INPUT_PULLUP);
     pinMode(clutch_pin, INPUT_PULLUP);
+    pinMode(direction_pin, INPUT_PULLUP);
     pinMode(voltage_sense_pin, INPUT_PULLUP);
 
     serialin = 0;
@@ -368,6 +372,9 @@ void setup()
 
     digitalWrite(clutch_pin, LOW);
     pinMode(clutch_pin, OUTPUT); // clutch
+
+    digitalWrite(direction_pin, LOW);
+    pinMode(direction_pin, OUTPUT); // clutch
 
     digitalWrite(led_pin, LOW);
     pinMode(led_pin, OUTPUT); // status LED
@@ -399,12 +406,13 @@ void setup()
         digitalWrite(pwm_output_pin, LOW); /* enable internal pullups */
         pinMode(pwm_output_pin, OUTPUT);
     }
+
     // test shunt type, if pin wired to ground, we have 0.01 ohm, otherwise 0.05 ohm
     shunt_resistance = digitalRead(shunt_sense_pin);
 
     // test current
     low_current = digitalRead(low_current_pin);
-    low_current = 0;
+    low_current = 1;
 
 #if 1
     // setup adc
@@ -421,7 +429,8 @@ void setup()
     ADCSRA |= _BV(ADPS0) |  _BV(ADPS1) | _BV(ADPS2); // divide clock by 128
 #endif
     ADCSRA |= _BV(ADSC); // start conversion
-#endif    
+#endif  
+    //default_off();
 }
 
 uint8_t in_bytes[3];
@@ -478,25 +487,28 @@ void position(uint16_t value)
             }
 #endif
             TIMSK1 = _BV(TOIE1) | _BV(OCIE1A);
+            digitalWrite(direction_pin, HIGH); // clutch
         } else if(value < 900) {
 #ifndef QUIET                
             ICR1_u=16000/DIV_CLOCK;  //fPWM=1khz
             if(value < 20)
                 value = 20;
-            OCR1B_u = 20 + (value)*16/DIV_CLOCK;
+            OCR1A_u = 20 + (value)*16/DIV_CLOCK;
 #else
             if(value < 100) {
                 if(low_current)
                     ICR1_u=64000;  //fPWM=62.5hz, 125hz, or 250hz
                 else
                     ICR1_u=16000;  //faster frequency for high current board
-                OCR1B_u = 120;
+//                OCR1A_u = 100;
+                OCR1A_u = 120;
             } else {
                 ICR1_u=1000/DIV_CLOCK;  //fPWM=16khz
-                OCR1B_u = 20 + (value)/DIV_CLOCK;
+                OCR1A_u = 20 + (value)/DIV_CLOCK;
             }
 #endif
-            TIMSK1 = _BV(TOIE1) | _BV(OCIE1B);
+            TIMSK1 = _BV(TOIE1) | _BV(OCIE1A);
+            digitalWrite(direction_pin, LOW); // clutch
         } else {
             TIMSK1 = 0;//_BV(TOIE1);
             a_top_off;
@@ -506,6 +518,7 @@ void position(uint16_t value)
 //            b_bottom_on;
             a_bottom_off;
             b_bottom_off;
+            digitalWrite(direction_pin, LOW); // clutch
         }
 
         if(TIMSK1) {
@@ -583,6 +596,36 @@ void position(uint16_t value)
             }
         }
     }
+}
+
+void default_off()
+{
+    /*
+    //Configure TIMER1
+        TIMSK1 = 0;
+        TCNT1 = 0;
+
+        OCR1A = 0;
+        
+        TCCR1A=_BV(WGM11);        //NON Inverted PWM
+        //TCCR1B=_BV(WGM13)|_BV(WGM12)|_BV(CS10); //PRESCALER=0 MODE 14(FAST PWM)
+        ICR1=16000/DIV_CLOCK;  //fPWM=1khz
+
+        a_top_off;
+        a_bottom_off;
+        b_top_off;
+        b_bottom_off;
+
+        //pinMode(hbridge_a_bottom_pin, OUTPUT);
+        //pinMode(hbridge_b_bottom_pin, OUTPUT);
+        pinMode(hbridge_a_top_pin, OUTPUT);
+        //pinMode(hbridge_b_top_pin, OUTPUT);    
+    timeout = 128;
+    TCCR2B = _BV(CS22) | _BV(CS21) | _BV(CS20); // divide 1024
+    stop();
+    detach(); */
+    pinMode(hbridge_a_top_pin,OUTPUT); 
+    analogWrite(hbridge_a_top_pin,0);
 }
 
 uint16_t command_value = 1000;
@@ -703,6 +746,23 @@ void engage()
         pinMode(enable_pin, INPUT);
 
         digitalWrite(enable_pin, HIGH);
+    } else if(pwm_style == 3) {
+        //Configure TIMER1
+        TIMSK1 = 0;
+        TCNT1 = 0;
+        TCCR1A=_BV(WGM11);        //NON Inverted PWM
+        TCCR1B=_BV(WGM13)|_BV(WGM12)|_BV(CS10); //PRESCALER=0 MODE 14(FAST PWM)
+        ICR1=16000/DIV_CLOCK;  //fPWM=1khz
+
+        a_top_off;
+        a_bottom_off;
+        b_top_off;
+        b_bottom_off;
+
+        pinMode(hbridge_a_bottom_pin, OUTPUT);
+        pinMode(hbridge_b_bottom_pin, OUTPUT);
+        pinMode(hbridge_a_top_pin, OUTPUT);
+        pinMode(hbridge_b_top_pin, OUTPUT);        
     } else {
         //Configure TIMER1
         TIMSK1 = 0;
